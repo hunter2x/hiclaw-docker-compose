@@ -1,0 +1,178 @@
+# ============================================================
+# HiClaw Docker Compose 部署文件
+# 基于 hiclaw-install.sh (embedded 架构) 转换生成
+#
+# 架构说明:
+#   - hiclaw-controller: 嵌入式容器，内置 Matrix/MinIO/Higress/Controller
+#   - Manager Agent 和 Worker Agent 容器由 Controller 动态创建管理
+# ============================================================
+
+version: "3.8"
+
+services:
+  # ──────────────────────────────────────────────────────
+  # HiClaw Controller（嵌入式全栈容器）
+  # 内置服务:
+  #   - Tuwunel Matrix 服务器 (6167)
+  #   - MinIO 对象存储 (9000)
+  #   - Higress AI Gateway (8080)
+  #   - Higress Console (8001)
+  #   - Element Web 客户端 (8088)
+  #   - HiClaw Controller API (8090)
+  # ──────────────────────────────────────────────────────
+  hiclaw-controller:
+    image: ${HICLAW_REGISTRY:-registry.cn-hangzhou.aliyuncs.com}/higress/hiclaw-embedded:${HICLAW_VERSION:-latest}
+    container_name: hiclaw-controller
+    restart: unless-stopped
+    hostname: hiclaw-controller
+
+    networks:
+      - hiclaw-net
+
+    # 网络别名（兼容 HiClaw 内部 DNS 解析）
+    network_aliases:
+      - matrix-local.hiclaw.io
+      - aigw-local.hiclaw.io
+      - fs-local.hiclaw.io
+
+    # 端口映射
+    ports:
+      # HICLAW_LOCAL_ONLY=1 时仅绑定 127.0.0.1
+      - "${HICLAW_LOCAL_ONLY:+127.0.0.1:}${HICLAW_PORT_GATEWAY:-18080}:8080"    # AI Gateway
+      - "${HICLAW_LOCAL_ONLY:+127.0.0.1:}${HICLAW_PORT_CONSOLE:-18001}:8001"    # Higress Console
+      - "${HICLAW_LOCAL_ONLY:+127.0.0.1:}${HICLAW_PORT_ELEMENT_WEB:-18088}:8088" # Element Web
+
+    # 卷挂载
+    volumes:
+      # Docker socket（Controller 需要创建 Manager/Worker 容器）
+      - /var/run/docker.sock:/var/run/docker.sock
+
+      # 持久化数据卷
+      - ${HICLAW_DATA_DIR:-hiclaw-data}:/data
+
+      # Manager 工作区（skills, memory, state.json）
+      - ${HICLAW_WORKSPACE_DIR:-./hiclaw-manager-workspace}:/root/hiclaw-fs/agents/manager
+
+      # 主机文件共享（可选）
+      - ${HICLAW_HOST_SHARE_DIR:-${HOME}}:/host-share
+
+    # 安全上下文（SELinux）
+    security_opt:
+      - label=disable
+
+    # 环境变量
+    environment:
+      # === 核心认证 ===
+      - HICLAW_ADMIN_USER=${HICLAW_ADMIN_USER:-hiclaw}
+      - HICLAW_ADMIN_PASSWORD=${HICLAW_ADMIN_PASSWORD:-change-me-please}
+      - HICLAW_MANAGER_PASSWORD=${HICLAW_MANAGER_PASSWORD:-}
+      - HICLAW_REGISTRATION_TOKEN=${HICLAW_REGISTRATION_TOKEN:-}
+      - HICLAW_MINIO_USER=${HICLAW_MINIO_USER:-}
+      - HICLAW_MINIO_PASSWORD=${HICLAW_MINIO_PASSWORD:-}
+
+      # === LLM 配置 ===
+      - HICLAW_LLM_PROVIDER=${HICLAW_LLM_PROVIDER:-openai-compat}
+      - HICLAW_LLM_API_KEY=${HICLAW_LLM_API_KEY:-}
+      - HICLAW_DEFAULT_MODEL=${HICLAW_DEFAULT_MODEL:-qwen3.6-plus}
+      - HICLAW_MANAGER_GATEWAY_KEY=${HICLAW_MANAGER_GATEWAY_KEY:-}
+
+      # === Manager 运行时 ===
+      - HICLAW_MANAGER_RUNTIME=${HICLAW_MANAGER_RUNTIME:-copaw}
+      - HICLAW_MANAGER_IMAGE=${HICLAW_MANAGER_IMAGE:-}
+
+      # === Worker 默认配置 ===
+      - HICLAW_DEFAULT_WORKER_RUNTIME=${HICLAW_DEFAULT_WORKER_RUNTIME:-openclaw}
+      - HICLAW_WORKER_IMAGE=${HICLAW_WORKER_IMAGE:-}
+      - HICLAW_COPAW_WORKER_IMAGE=${HICLAW_COPAW_WORKER_IMAGE:-}
+      - HICLAW_HERMES_WORKER_IMAGE=${HICLAW_HERMES_WORKER_IMAGE:-}
+
+      # === Matrix 配置 ===
+      - HICLAW_MATRIX_DOMAIN=${HICLAW_MATRIX_DOMAIN:-matrix-local.hiclaw.io:18080}
+      - HICLAW_ELEMENT_HOMESERVER_URL=http://127.0.0.1:${HICLAW_PORT_GATEWAY:-18080}
+      - HICLAW_MATRIX_URL=http://127.0.0.1:6167
+      - HICLAW_MATRIX_E2EE=${HICLAW_MATRIX_E2EE:-0}
+
+      # === 存储配置 ===
+      - HICLAW_MINIO_ENDPOINT=http://127.0.0.1:9000
+      - HICLAW_MINIO_BUCKET=hiclaw-storage
+      - HICLAW_STORAGE_PREFIX=hiclaw/hiclaw-storage
+      - HICLAW_FS_ENDPOINT=http://127.0.0.1:9000
+
+      # === 网关配置 ===
+      - HICLAW_AI_GATEWAY_URL=http://${HICLAW_AI_GATEWAY_DOMAIN:-aigw-local.hiclaw.io}:8080
+      - HICLAW_CONTROLLER_URL=http://hiclaw-controller:8090
+
+      # === Docker 网络 ===
+      - HICLAW_DOCKER_NETWORK=hiclaw-net
+
+      # === 工作区与共享目录 ===
+      - HICLAW_WORKSPACE_DIR=/root/hiclaw-fs/agents/manager
+      - HICLAW_HOST_SHARE_DIR=/host-share
+
+      # === 功能开关 ===
+      - HICLAW_MANAGER_ENABLED=true
+      - HICLAW_PORT_MANAGER_CONSOLE=${HICLAW_PORT_MANAGER_CONSOLE:-18888}
+
+      # === 时区 ===
+      - TZ=${TZ:-Asia/Shanghai}
+
+      # === 语言 ===
+      - HICLAW_LANGUAGE=${HICLAW_LANGUAGE:-zh}
+
+      # === OpenAI 兼容 Base URL ===
+      - HICLAW_OPENAI_BASE_URL=${HICLAW_OPENAI_BASE_URL:-}
+
+      # === Embedding 模型 ===
+      - HICLAW_EMBEDDING_MODEL=${HICLAW_EMBEDDING_MODEL:-text-embedding-v4}
+
+      # === GitHub Token（可选） ===
+      - HICLAW_GITHUB_TOKEN=${HICLAW_GITHUB_TOKEN:-}
+
+      # === YOLO 模式 ===
+      - HICLAW_YOLO=${HICLAW_YOLO:-0}
+
+      # === Matrix Debug ===
+      - HICLAW_MATRIX_DEBUG=${HICLAW_MATRIX_DEBUG:-0}
+
+      # === Nacos 配置 ===
+      - HICLAW_NACOS_REGISTRY_URI=${HICLAW_NACOS_REGISTRY_URI:-}
+      - HICLAW_NACOS_USERNAME=${HICLAW_NACOS_USERNAME:-}
+      - HICLAW_NACOS_PASSWORD=${HICLAW_NACOS_PASSWORD:-}
+      - HICLAW_NACOS_TOKEN=${HICLAW_NACOS_TOKEN:-}
+      - HICLAW_SKILLS_API_URL=${HICLAW_SKILLS_API_URL:-}
+
+      # === CMS 可观测性 ===
+      - HICLAW_CMS_TRACES_ENABLED=${HICLAW_CMS_TRACES_ENABLED:-false}
+      - HICLAW_CMS_SERVICE_NAME=${HICLAW_CMS_SERVICE_NAME:-hiclaw-manager}
+      - HICLAW_CMS_METRICS_ENABLED=${HICLAW_CMS_METRICS_ENABLED:-false}
+      - HICLAW_CMS_ENDPOINT=${HICLAW_CMS_ENDPOINT:-}
+      - HICLAW_CMS_LICENSE_KEY=${HICLAW_CMS_LICENSE_KEY:-}
+      - HICLAW_CMS_PROJECT=${HICLAW_CMS_PROJECT:-}
+      - HICLAW_CMS_WORKSPACE=${HICLAW_CMS_WORKSPACE:-}
+
+      # === Docker 代理 ===
+      - HICLAW_DOCKER_PROXY=${HICLAW_DOCKER_PROXY:-1}
+
+      # === Worker 空闲超时 ===
+      - HICLAW_WORKER_IDLE_TIMEOUT=${HICLAW_WORKER_IDLE_TIMEOUT:-720}
+
+      # === 镜像仓库（Higress WASM 插件） ===
+      - HIGRESS_ADMIN_WASM_PLUGIN_IMAGE_REGISTRY=${HICLAW_REGISTRY:-}
+
+      # === JVM 参数 ===
+      - JVM_ARGS=${JVM_ARGS:-}
+
+# ──────────────────────────────────────────────────────────
+# 网络
+# ──────────────────────────────────────────────────────────
+networks:
+  hiclaw-net:
+    name: hiclaw-net
+    driver: bridge
+
+# ──────────────────────────────────────────────────────────
+# 持久化卷
+# ──────────────────────────────────────────────────────────
+volumes:
+  hiclaw-data:
+    name: ${HICLAW_DATA_DIR:-hiclaw-data}
